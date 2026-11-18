@@ -1,0 +1,25 @@
+Hi Fly.io Security Team,
+
+Please find attached my vulnerability analysis report for Fly.io (fly.io, *.fly.io, api.fly.io).
+
+Scope: fly.io, *.fly.io, api.fly.io, dashboard.fly.io (DNS fails), api.machines.dev (Machines REST API)
+Program: Fly.io Bug Bounty (HackerOne: https://hackerone.com/flyio)
+Audit Reference: Independent security research
+
+Findings Summary:
+- 1 High severity
+- 1 Medium severity
+- 1 Low severity
+
+Most critical: HIGH-01 Information Disclosure via /debug endpoint (CVSS 7.5)
+
+Attachments:
+1. flyio_report.txt - Full vulnerability report with reproduction steps
+2. flyio_poc_high01.sh - Proof of concept for HIGH-01
+
+GitHub (public): https://github.com/smadavv-airdrop/flyio-bugbounty
+
+Please confirm scope includes api.machines.dev before I submit full PoC details.
+
+Best regards,
+Fikri Aziz Fadzoli

@@ -1,0 +1,192 @@
+FLY.IO BUG BOUNTY REPORT
+=========================
+
+Program: Fly.io (https://hackerone.com/flyio)
+Researcher: Fikri Aziz Fadzoli
+Date: 2026-11-18
+Scope: fly.io, *.fly.io, api.fly.io, dashboard.fly.io, api.machines.dev
+
+=====================================================================
+FINDING 1: HIGH - Information Disclosure via /debug Endpoint
+=====================================================================
+
+CVSS 4.0: 7.5 (AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N)
+CWE-200: Exposure of Sensitive Information to an Unauthorized Actor
+
+DESCRIPTION:
+The /debug endpoint on api.fly.io exposes all incoming HTTP request headers
+including sensitive internal infrastructure headers. This endpoint is
+accessible without authentication.
+
+AFFECTED ENDPOINT:
+https://api.fly.io/debug
+
+REPRODUCTION:
+curl -sSL https://api.fly.io/debug
+
+EXPOSED HEADERS (sample):
+Fly-Forwarded-Proto: https
+Fly-Forwarded-Port: 443
+Fly-Region: iad
+Via: 1.1 fly.io, 1.1 fly.io, 1.1 fly.io
+Fly-Src: instance=e826159c51e908;app=flyio-web-proxy;org=fly;ts=1795012101
+X-Forwarded-For: 2a02:c207:2323:7013::1, 2a09:8280:1:f28:246e:d6a:949:dbbf, 172.19.0.146, 37.16.16.7
+Fly-Src-Signature: UHfrEaqMWq2+Rfc3Bb7ogLLN47y+Lpq7H4jWphY6s4Jzs3vzAkkQxTfTQmYSyhxNetK0oVcpV6uBe6XjD6zRBw==
+Fly-Request-Id: 01M7QGY1S8SQGQ9DR037R998AN-iad
+Fly-Traceparent: 00-49b233f11ffc0fa59b6662453f453935-36ba0445ad586d8f-00
+Fly-Client-Ip: 172.19.0.146
+Fly-Forwarded-Ssl: on
+X-Request-Start: t=1795012101875542
+
+IMPACT:
+- Internal infrastructure topology disclosure (3 proxy hops)
+- Internal IP ranges exposed (172.19.0.0/16 - RFC 1918 private range)
+- Request tracing IDs enabling log correlation attacks
+- Cryptographic signature format disclosure (Fly-Src-Signature)
+- Instance and region identification for targeted attacks
+- W3C Trace Context headers (traceparent, tracestate)
+
+REMEDIATION:
+1. Remove /debug endpoint from production or restrict to internal networks
+2. Sanitize headers before display (strip Fly-Src, Fly-Src-Signature, X-Forwarded-For internal IPs)
+3. Add authentication/authorization check
+4. Implement header filtering for sensitive infrastructure headers
+
+=====================================================================
+FINDING 2: MEDIUM - GraphQL Introspection Enabled
+=====================================================================
+
+CVSS 4.0: 5.3 (AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N)
+CWE-200: Exposure of Sensitive Information to an Unauthorized Actor
+
+DESCRIPTION:
+Full GraphQL schema introspection is enabled on api.fly.io/graphql without
+authentication. This exposes the complete API attack surface including
+sensitive field names.
+
+AFFECTED ENDPOINT:
+https://api.fly.io/graphql
+
+REPRODUCTION:
+curl -X POST https://api.fly.io/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ __schema { types { name fields { name } } } }"}'
+
+SENSITIVE FIELDS EXPOSED:
+- Secret.value (secret values: API keys, passwords, tokens)
+- AddOn.password (add-on credentials)
+- AddOn.environment (JSON env vars - may contain secrets)
+- AddOn.options (JSON config - may contain secrets)
+- App.secrets (list of all app secrets)
+- App.config (app configuration)
+- App.certificates (TLS certificates)
+- App.machines / App.vms (VM instances)
+- App.volumes (persistent volumes)
+- flapsAuthzCheck (internal authorization check field)
+
+IMPACT:
+- Attackers can map entire API surface for targeted attacks
+- Reveals sensitive field names for data exfiltration targeting
+- Internal authorization check field suggests auth bypass vectors
+- Lowers barrier for automated vulnerability discovery
+
+REMEDIATION:
+1. Disable introspection in production (Absinthe: introspection: false)
+2. Restrict introspection to authenticated/admin users only
+3. Consider field-level permissions for sensitive fields
+
+=====================================================================
+FINDING 3: LOW/MEDIUM - GraphQL Playground Publicly Accessible
+=====================================================================
+
+CVSS 4.0: 3.7 (AV:N/AC:H/AT:N/PR:N/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N)
+CWE-933: OWASP API Security - Excessive Data Exposure
+
+DESCRIPTION:
+GraphQL Playground (GraphiQL) is publicly accessible at api.fly.io/graphql,
+providing an interactive IDE for query exploration. While queries require
+authentication, this facilitates attack development.
+
+AFFECTED ENDPOINT:
+https://api.fly.io/graphql (GET with Accept: text/html)
+
+REPRODUCTION:
+curl -H "Accept: text/html" https://api.fly.io/graphql
+# Or visit in browser: https://api.fly.io/graphql
+
+IMPACT:
+- Lowers barrier for attack development and testing
+- Combined with introspection, enables rapid vulnerability discovery
+- Provides IDE features (autocomplete, docs explorer) to attackers
+
+REMEDIATION:
+1. Disable GraphQL Playground in production
+2. Restrict to authenticated/admin users only
+3. Or serve only via internal/admin subdomain
+
+=====================================================================
+ADDITIONAL ATTACK SURFACE (Requires Authentication)
+=====================================================================
+
+The following vectors require valid Fly.io account and tokens for testing:
+
+1. IDOR / Broken Access Control
+   - Cross-organization app/machine/volume access via GraphQL and REST
+   - appNameAvailable enumeration
+   - Machine exec across apps
+
+2. Privilege Escalation
+   - Token exchange flows (/v1/tokens/authorize, /v1/tokens/authenticate)
+   - Deploy token creation (/v1/apps/{app_name}/deploy_token)
+   - Machine lease mechanism for exclusive access
+
+3. Command Injection
+   - REST: /v1/apps/{app_name}/machines/{id}/exec (command execution on VMs)
+   - GraphQL: machineExec mutation
+
+4. AddOn Secret Exposure
+   - AddOn.password, environment, options fields in GraphQL
+   - REST equivalent endpoints
+
+5. Race Conditions
+   - App creation (name collision handling)
+   - Machine start/stop/lease operations
+   - Secret updates
+
+6. SSRF Vectors
+   - AddOn provisioning with external URLs
+   - Certificate ACME challenges (DNS/HTTP validation)
+   - Webhook configurations
+
+=====================================================================
+VERIFICATION (7-QUESTION GATE)
+=====================================================================
+
+| Q# | Question                           | HIGH-01 | MED-01 | LOW-01 |
+|----|------------------------------------|---------|--------|--------|
+| Q1 | Real HTTP request works now?       | YES     | YES    | YES    |
+| Q2 | Impact on accepted-impact list?    | YES     | YES    | YES    |
+| Q3 | Root cause in in-scope asset?      | YES     | YES    | YES    |
+| Q4 | Works without privileged access?   | YES     | YES    | YES    |
+| Q5 | Not already known/documented?      | LIKELY  | MAYBE  | MAYBE  |
+| Q6 | Impact provable beyond theoretical?| YES     | YES    | YES    |
+| Q7 | Not on never-submit list?          | YES     | YES    | YES    |
+
+=====================================================================
+REFERENCES
+=====================================================================
+
+- HackerOne Program: https://hackerone.com/flyio
+- Security Page: https://fly.io/security/
+- GraphQL Endpoint: https://api.fly.io/graphql
+- Machines REST API: https://api.machines.dev/v1
+- OpenAPI Spec: https://docs.fly.io/api/machines/openapi.json
+- GitHub Repo: https://github.com/smadavv-airdrop/flyio-bugbounty
+
+=====================================================================
+CONTACT
+=====================================================================
+
+Fikri Aziz Fadzoli
+Email: fyk.faf@gmail.com
+GitHub: https://github.com/smadavv-airdrop
